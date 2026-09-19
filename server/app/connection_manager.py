@@ -65,14 +65,27 @@ class ConnectionManager:
         self._last_seen[(quiz_id, user_id)] = time.monotonic()
         ACTIVE_CONNECTIONS.inc()
 
-    def unregister(self, quiz_id: str, user_id: str) -> None:
+    def unregister(self, quiz_id: str, user_id: str, websocket: WebSocket | None = None) -> bool:
+        """Remove a connection; returns False if nothing was removed.
+
+        When ``websocket`` is given, only that exact socket is removed. This stops a
+        stale socket's cleanup from evicting the newer socket that replaced it after
+        a rejoin.
+        """
+
         room = self._rooms.get(quiz_id)
-        if room and room.pop(user_id, None) is not None:
-            ACTIVE_CONNECTIONS.dec()
+        if room is None:
+            return False
+        current = room.get(user_id)
+        if current is None or (websocket is not None and current is not websocket):
+            return False
+        del room[user_id]
+        ACTIVE_CONNECTIONS.dec()
         self._last_seen.pop((quiz_id, user_id), None)
         self.answer_rate_limiter.drop(user_id)
-        if room is not None and not room:
-            self._rooms.pop(quiz_id, None)
+        if not room:
+            del self._rooms[quiz_id]
+        return True
 
     def touch(self, quiz_id: str, user_id: str) -> None:
         """Record that a connection is alive (any inbound message, not just ping)."""
@@ -89,20 +102,10 @@ class ConnectionManager:
         ]
         for quiz_id, user_id in stale:
             websocket = self._rooms.get(quiz_id, {}).get(user_id)
-            self.unregister(quiz_id, user_id)
-            if websocket is not None:
+            if websocket is not None and self.unregister(quiz_id, user_id, websocket):
                 log_event(logger, "idle_connection_reaped", quiz_id=quiz_id, user_id=user_id)
                 with suppress(Exception):
                     await websocket.close(code=1000)
-
-    def connection_count(self, quiz_id: str) -> int:
-        return len(self._rooms.get(quiz_id, {}))
-
-    async def send_to(self, quiz_id: str, user_id: str, message: BaseModel) -> None:
-        websocket = self._rooms.get(quiz_id, {}).get(user_id)
-        if websocket is None:
-            return
-        await self._safe_send(quiz_id, user_id, websocket, message)
 
     async def broadcast(self, quiz_id: str, message: BaseModel) -> None:
         room = dict(self._rooms.get(quiz_id, {}))
@@ -120,4 +123,4 @@ class ConnectionManager:
             # the receive loop for that connection will observe the disconnect
             # and clean up participant state.
             log_event(logger, "send_failed", quiz_id=quiz_id, user_id=user_id)
-            self.unregister(quiz_id, user_id)
+            self.unregister(quiz_id, user_id, websocket)

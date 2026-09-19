@@ -28,7 +28,7 @@ from app.observability import (
     log_event,
     setup_logging,
 )
-from app.quiz import QuizError, QuizSession, mock_question_bank
+from app.quiz import Question, QuizError, QuizSession, QuizState, mock_question_bank
 from app.schemas import (
     AnswerMessage,
     ErrorCode,
@@ -54,10 +54,12 @@ setup_logging()
 logger = get_logger("app.main")
 
 REAP_INTERVAL_SECONDS = 15.0
+FINISHED_SESSION_RETENTION_SECONDS = 600.0
 
 store = InMemorySessionStore()
 connections = ConnectionManager()
 _quiz_runner_tasks: dict[str, asyncio.Task[None]] = {}
+_retire_tasks: set[asyncio.Task[None]] = set()
 
 
 async def _reap_idle_connections_periodically() -> None:
@@ -109,6 +111,18 @@ def _leaderboard_message(session: QuizSession) -> LeaderboardMessage:
     return LeaderboardMessage(standings=_leaderboard_entries(session))
 
 
+def _question_message(session: QuizSession, question: Question, duration_ms: int) -> QuestionMessage:
+    return QuestionMessage(
+        question_id=question.id,
+        index=session.current_question_index,
+        total=len(session.questions),
+        text=question.text,
+        choices=question.choices,
+        duration_ms=duration_ms,
+        server_time_ms=int(time.time() * 1000),
+    )
+
+
 # Broadcasting the full leaderboard to every participant after *every single*
 # answer is O(participants^2) in the worst case: a burst of N answers each
 # fan out to N sockets. A 300-client load test (scripts/load_test.py)
@@ -142,16 +156,7 @@ async def _run_quiz(session: QuizSession) -> None:
     try:
         while question is not None:
             await connections.broadcast(
-                session.quiz_id,
-                QuestionMessage(
-                    question_id=question.id,
-                    index=session.current_question_index,
-                    total=len(session.questions),
-                    text=question.text,
-                    choices=question.choices,
-                    duration_ms=question.duration_ms,
-                    server_time_ms=int(time.time() * 1000),
-                ),
+                session.quiz_id, _question_message(session, question, question.duration_ms)
             )
             await asyncio.sleep(question.duration_ms / 1000)
             await connections.broadcast(session.quiz_id, _leaderboard_message(session))
@@ -162,40 +167,48 @@ async def _run_quiz(session: QuizSession) -> None:
             QuizEndMessage(final_standings=_leaderboard_entries(session)),
         )
         log_event(logger, "quiz_finished", quiz_id=session.quiz_id)
+        _retire_tasks.add(asyncio.create_task(_retire_session_later(session.quiz_id)))
     finally:
         _quiz_runner_tasks.pop(session.quiz_id, None)
+
+
+async def _retire_session_later(quiz_id: str) -> None:
+    """Free a finished quiz after a grace period so sessions do not accumulate forever."""
+
+    await asyncio.sleep(FINISHED_SESSION_RETENTION_SECONDS)
+    await store.remove(quiz_id)
 
 
 async def _reject(websocket: WebSocket, code: str, message: str) -> None:
     await websocket.send_text(ErrorMessage(code=code, message=message).model_dump_json())
 
 
-async def _handle_join(websocket: WebSocket, message: JoinMessage) -> str:
-    session = await store.get_or_create(message.quiz_id, mock_question_bank)
+async def _handle_join(websocket: WebSocket, quiz_id: str, message: JoinMessage) -> str:
+    session = await store.get_or_create(quiz_id, mock_question_bank)
     participant = await session.join(message.username)
-    connections.register(message.quiz_id, participant.user_id, websocket)
+    connections.register(quiz_id, participant.user_id, websocket)
     await websocket.send_text(
         JoinedMessage(
-            quiz_id=message.quiz_id,
+            quiz_id=quiz_id,
             user_id=participant.user_id,
             username=participant.username,
             state=session.state.value,
         ).model_dump_json()
     )
-    await connections.broadcast(message.quiz_id, _participant_update(session))
-    log_event(logger, "participant_joined", quiz_id=message.quiz_id, user_id=participant.user_id)
+    await connections.broadcast(quiz_id, _participant_update(session))
+    log_event(logger, "participant_joined", quiz_id=quiz_id, user_id=participant.user_id)
     return participant.user_id
 
 
-async def _handle_rejoin(websocket: WebSocket, message: RejoinMessage) -> str:
-    session = await store.get(message.quiz_id)
+async def _handle_rejoin(websocket: WebSocket, quiz_id: str, message: RejoinMessage) -> str:
+    session = await store.get(quiz_id)
     if session is None:
         raise QuizError(ErrorCode.QUIZ_NOT_FOUND, "No quiz with that id.")
     participant = await session.rejoin(message.user_id)
-    connections.register(message.quiz_id, participant.user_id, websocket)
+    connections.register(quiz_id, participant.user_id, websocket)
     await websocket.send_text(
         JoinedMessage(
-            quiz_id=message.quiz_id,
+            quiz_id=quiz_id,
             user_id=participant.user_id,
             username=participant.username,
             state=session.state.value,
@@ -211,18 +224,27 @@ async def _handle_rejoin(websocket: WebSocket, message: RejoinMessage) -> str:
             total_score=participant.score,
         ).model_dump_json()
     )
-    await connections.broadcast(message.quiz_id, _participant_update(session))
-    log_event(logger, "participant_rejoined", quiz_id=message.quiz_id, user_id=participant.user_id)
+    # A reconnecting client missed every broadcast while away, so resync it with
+    # the live state instead of leaving the UI blank until the next question.
+    if session.state == QuizState.IN_PROGRESS and current is not None:
+        question_msg = _question_message(session, current, session.remaining_ms())
+        await websocket.send_text(question_msg.model_dump_json())
+        await websocket.send_text(_leaderboard_message(session).model_dump_json())
+    elif session.state == QuizState.FINISHED:
+        final = QuizEndMessage(final_standings=_leaderboard_entries(session))
+        await websocket.send_text(final.model_dump_json())
+    await connections.broadcast(quiz_id, _participant_update(session))
+    log_event(logger, "participant_rejoined", quiz_id=quiz_id, user_id=participant.user_id)
     return participant.user_id
 
 
-async def _handle_start(message: StartMessage) -> None:
-    session = await store.get(message.quiz_id)
+async def _handle_start(quiz_id: str) -> None:
+    session = await store.get(quiz_id)
     if session is None:
         raise QuizError(ErrorCode.QUIZ_NOT_FOUND, "No quiz with that id.")
     await session.start()
-    _quiz_runner_tasks[message.quiz_id] = asyncio.create_task(_run_quiz(session))
-    log_event(logger, "quiz_started", quiz_id=message.quiz_id)
+    _quiz_runner_tasks[quiz_id] = asyncio.create_task(_run_quiz(session))
+    log_event(logger, "quiz_started", quiz_id=quiz_id)
 
 
 async def _handle_answer(websocket: WebSocket, quiz_id: str, user_id: str, message: AnswerMessage) -> None:
@@ -276,26 +298,33 @@ async def websocket_endpoint(websocket: WebSocket, quiz_id: str) -> None:
                 continue
 
             try:
-                if isinstance(message, JoinMessage):
-                    user_id = await _handle_join(websocket, message)
-                elif isinstance(message, RejoinMessage):
-                    user_id = await _handle_rejoin(websocket, message)
-                elif isinstance(message, StartMessage):
-                    await _handle_start(message)
-                elif isinstance(message, AnswerMessage):
-                    if user_id is None:
-                        raise QuizError(ErrorCode.UNKNOWN_USER, "Join a quiz before answering.")
-                    await _handle_answer(websocket, quiz_id, user_id, message)
+                claimed_room = getattr(message, "quiz_id", quiz_id)
+                if claimed_room != quiz_id:
+                    raise QuizError(ErrorCode.INVALID_MESSAGE, "quiz_id does not match the connected room.")
+                if isinstance(message, JoinMessage | RejoinMessage):
+                    if user_id is not None:
+                        raise QuizError(ErrorCode.INVALID_MESSAGE, "This connection has already joined.")
+                    if isinstance(message, JoinMessage):
+                        user_id = await _handle_join(websocket, quiz_id, message)
+                    else:
+                        user_id = await _handle_rejoin(websocket, quiz_id, message)
                 elif isinstance(message, PingMessage):
                     await websocket.send_text(PongMessage().model_dump_json())
+                elif user_id is None:
+                    raise QuizError(ErrorCode.UNKNOWN_USER, "Join a quiz first.")
+                elif isinstance(message, StartMessage):
+                    await _handle_start(quiz_id)
+                else:
+                    await _handle_answer(websocket, quiz_id, user_id, message)
             except QuizError as exc:
                 await _reject(websocket, exc.code, exc.message)
 
     except WebSocketDisconnect:
         pass
     finally:
-        if user_id is not None:
-            connections.unregister(quiz_id, user_id)
+        # Only clean up if this socket is still the registered one; after a rejoin
+        # on a newer socket, this stale socket must not mark the user offline.
+        if user_id is not None and connections.unregister(quiz_id, user_id, websocket):
             session = await store.get(quiz_id)
             if session is not None:
                 session.mark_disconnected(user_id)

@@ -8,9 +8,9 @@ can never interleave into a lost update. The lock is per-session, not
 global, so unrelated quiz rooms never contend with each other.
 
 State machine: ``LOBBY -> IN_PROGRESS -> FINISHED``. There is no path back;
-a finished quiz is retained (for a late leaderboard fetch/rejoin) until the
-process restarts (see ADR 0002 for why durability is explicitly out of
-scope).
+a finished quiz is retained for a grace period (so late clients can rejoin and
+see the final standings) and then removed by ``main.py``; nothing survives a
+process restart (see ADR 0002 for why durability is explicitly out of scope).
 """
 
 from __future__ import annotations
@@ -109,6 +109,15 @@ class QuizSession:
         if 0 <= self.current_question_index < len(self.questions):
             return self.questions[self.current_question_index]
         return None
+
+    def remaining_ms(self) -> int:
+        """Time left on the active question, measured on the server's monotonic clock."""
+
+        question = self.current_question
+        if question is None or self._current_question_started_at is None:
+            return 0
+        elapsed_ms = int((time.monotonic() - self._current_question_started_at) * 1000)
+        return max(0, question.duration_ms - elapsed_ms)
 
     def leaderboard(self) -> list[RankedEntry]:
         rankable = [

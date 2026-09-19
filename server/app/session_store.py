@@ -25,6 +25,8 @@ class SessionStore(Protocol):
 
     async def get(self, quiz_id: str) -> QuizSession | None: ...
 
+    async def remove(self, quiz_id: str) -> None: ...
+
 
 class InMemorySessionStore:
     def __init__(self) -> None:
@@ -49,6 +51,9 @@ class InMemorySessionStore:
 
     async def get(self, quiz_id: str) -> QuizSession | None:
         return self._sessions.get(quiz_id)
+
+    async def remove(self, quiz_id: str) -> None:
+        self._sessions.pop(quiz_id, None)
 
     def active_session_count(self) -> int:
         return len(self._sessions)

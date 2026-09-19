@@ -23,7 +23,7 @@ jobs:
       - run: pytest -q
 
   client:
-    name: Client (lint, type-check, build)
+    name: Client (lint, type-check, unit tests, build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,4 +36,5 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm run lint
       - run: npm run type-check
+      - run: npm run test:unit -- --run
       - run: npm run build

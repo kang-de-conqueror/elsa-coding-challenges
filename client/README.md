@@ -50,12 +50,18 @@ src/
   composables/useQuizSocket.ts  Connection lifecycle: connect, reconnect+backoff, heartbeat, rejoin
   stores/quiz.ts                 Pinia store: single source of truth for quiz UI state
   components/
-    QuestionCard.vue              Current question, choices, countdown, answer feedback
-    LeaderboardPanel.vue           Live-ranked standings
-    ScoreBadge.vue                 Current user's score/rank
+    QuestionCard.vue              Question, lettered answer cards, countdown ring, answer feedback
+    LeaderboardPanel.vue           Live-ranked standings with medals, score bars and move animation
+    ScoreBadge.vue                 Current user's avatar, score and rank
+    UserAvatar.vue                 Deterministic coloured initial avatar
+    PodiumBoard.vue                Top-3 podium on the results screen
     ConnectionStatus.vue           Connected / reconnecting / disconnected indicator
   views/
     JoinView.vue                   Quiz ID + name entry
     QuizRoomView.vue               Lobby / in-progress / finished, composed from the components above
   App.vue                         Switches between JoinView and QuizRoomView based on store.phase
 ```
+
+## Design
+
+The visual language follows ELSA's own site: deep indigo `#2b1b93`, navy `#171f48` text, soft blue `#5f94cf` accent, white surfaces, rounded cards and a motivational tone. Tokens live in `src/assets/main.css` (light and dark via `prefers-color-scheme`); animations honour `prefers-reduced-motion`; layouts collapse to one column under 860px.

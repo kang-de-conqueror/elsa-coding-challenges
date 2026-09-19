@@ -1,32 +1,54 @@
 <script setup lang="ts">
 import { useQuizStore } from '@/stores/quiz'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const store = useQuizStore()
 </script>
 
 <template>
   <div class="score-badge">
-    <span class="label">{{ store.username }}</span>
-    <span class="score">{{ store.myScore }} pts</span>
-    <span v-if="store.myRank" class="rank">rank #{{ store.myRank }}</span>
+    <UserAvatar :name="store.username" :size="34" />
+    <div class="info">
+      <span class="name">{{ store.username }}</span>
+      <span v-if="store.myRank" class="rank">Rank #{{ store.myRank }}</span>
+    </div>
+    <span class="score">{{ store.myScore }}<small>pts</small></span>
   </div>
 </template>
 
 <style scoped>
 .score-badge {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  padding: 0.5rem 0.9rem;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.4rem 1rem 0.4rem 0.45rem;
   border-radius: 999px;
-  background: var(--color-background-soft);
-  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
 }
-.score {
-  color: hsla(160, 100%, 30%, 1);
+.info {
+  display: grid;
+  line-height: 1.15;
+}
+.name {
+  font-weight: 700;
+  font-size: 0.9rem;
 }
 .rank {
-  font-size: 0.85rem;
-  opacity: 0.75;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.score {
+  font-weight: 800;
+  font-size: 1.15rem;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+.score small {
+  margin-left: 0.15rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-weight: 700;
 }
 </style>

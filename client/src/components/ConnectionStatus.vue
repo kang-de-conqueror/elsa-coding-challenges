@@ -31,30 +31,45 @@ const label = computed(() => {
 .status {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 0.25rem 0.65rem;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.3rem 0.75rem;
   border-radius: 999px;
-  background: var(--color-background-mute);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
 .dot {
-  width: 0.55rem;
-  height: 0.55rem;
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 50%;
   background: currentColor;
 }
 
 .status.open {
-  color: #1a7f37;
+  color: var(--success);
+}
+.status.open .dot {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: ping 2s infinite;
 }
 .status.connecting,
 .status.reconnecting {
-  color: #9a6700;
+  color: var(--warning);
 }
 .status.closed,
 .status.idle {
-  color: #cf222e;
+  color: var(--danger);
+}
+
+@keyframes ping {
+  0% {
+    box-shadow: 0 0 0 0 rgba(18, 160, 106, 0.55);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px rgba(18, 160, 106, 0);
+  }
 }
 </style>

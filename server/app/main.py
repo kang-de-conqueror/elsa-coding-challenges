@@ -158,6 +158,9 @@ async def _run_quiz(session: QuizSession) -> None:
             await connections.broadcast(
                 session.quiz_id, _question_message(session, question, question.duration_ms)
             )
+            # Show every player (at 0 points if need be) from the first second, not
+            # only after the first answer arrives.
+            await connections.broadcast(session.quiz_id, _leaderboard_message(session))
             await asyncio.sleep(question.duration_ms / 1000)
             await connections.broadcast(session.quiz_id, _leaderboard_message(session))
             question = await session.advance_question()

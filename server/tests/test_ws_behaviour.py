@@ -149,3 +149,19 @@ def test_joining_a_started_quiz_is_rejected() -> None:
         _until(first, "question")
         late.send_json({"type": "join", "quiz_id": room, "username": "bob"})
         assert _until(late, "error")["code"] == "QUIZ_ALREADY_STARTED"
+
+
+def test_leaderboard_lists_every_player_as_soon_as_a_question_starts() -> None:
+    room = "early-board-room"
+    with (
+        TestClient(main_module.app) as client,
+        client.websocket_connect(f"/ws/{room}") as first,
+        client.websocket_connect(f"/ws/{room}") as second,
+    ):
+        _join(first, room, "alice")
+        _join(second, room, "bob")
+        first.send_json({"type": "start", "quiz_id": room})
+        _until(second, "question")
+        standings = _until(second, "leaderboard")["standings"]
+        assert {entry["username"] for entry in standings} == {"alice", "bob"}
+        assert all(entry["score"] == 0 for entry in standings)

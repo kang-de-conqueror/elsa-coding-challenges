@@ -58,7 +58,9 @@ The work started in Claude Code's plan mode: given only the challenge's GitHub r
 
 **Verified in this session**: server correctness under concurrency (automated + load test), server API surface (manual + automated), the WebSocket protocol contract end-to-end (both server-side integration test and a client-shaped script), static analysis (lint + strict types) on both server and client, and that the client builds.
 
-**Not verified**: the GitHub Actions workflow on GitHub's own runners until the first push runs it, and other browsers than Chromium-based Edge/Chrome.
+**Also verified**: the GitHub Actions workflow ran green on GitHub's runners (server and client jobs) after the push.
+
+**Not verified**: browsers other than Chromium-based Edge/Chrome.
 
 ## Review round (engineering-manager style code review)
 

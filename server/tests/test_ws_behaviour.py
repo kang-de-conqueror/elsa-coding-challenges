@@ -53,12 +53,33 @@ def test_rejoin_mid_quiz_resyncs_question_score_and_leaderboard() -> None:
         with client.websocket_connect(f"/ws/{room}") as again:
             again.send_json({"type": "rejoin", "quiz_id": room, "user_id": alice_id})
             assert _until(again, "joined")["state"] == "in_progress"
-            assert _until(again, "score_update")["total_score"] == earned
             question = _until(again, "question")
             assert question["question_id"] == "q0"
             assert 0 < question["duration_ms"] <= 5000
+            replay = _until(again, "score_update")  # the answer given before disconnecting
+            assert replay["question_id"] == "q0"
+            assert replay["correct"] is True
+            assert replay["total_score"] == earned
             standings = _until(again, "leaderboard")["standings"]
             assert standings[0]["user_id"] == alice_id
+
+
+def test_rejoin_before_answering_does_not_mark_the_question_answered() -> None:
+    room = "unanswered-room"
+    with TestClient(main_module.app) as client:
+        with client.websocket_connect(f"/ws/{room}") as alice:
+            alice_id = _join(alice, room, "alice")
+            alice.send_json({"type": "start", "quiz_id": room})
+            _until(alice, "question")
+
+        with client.websocket_connect(f"/ws/{room}") as again:
+            again.send_json({"type": "rejoin", "quiz_id": room, "user_id": alice_id})
+            _until(again, "question")
+            assert _until(again, "leaderboard")["standings"][0]["score"] == 0
+            again.send_json({"type": "answer", "request_id": "r1", "question_id": "q0", "choice_index": 1})
+            ack = _until(again, "score_update")
+            assert ack["correct"] is True
+            assert ack["points_awarded"] > 0
 
 
 def test_stale_socket_closing_after_rejoin_does_not_evict_new_socket() -> None:

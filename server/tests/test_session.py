@@ -131,6 +131,8 @@ async def test_duplicate_request_id_does_not_double_score() -> None:
     )
 
     assert second.duplicate is True
+    assert second.correct is first.correct
+    assert second.points_awarded == first.points_awarded
     assert second.total_score == first.total_score
     assert session.participants[alice.user_id].score == first.points_awarded
 
@@ -176,6 +178,8 @@ async def test_concurrent_answers_from_many_participants_never_corrupt_state() -
 
     assert all(r.correct for r in results)
     assert all(r.points_awarded > 0 for r in results)
-    scores = {p.user_id: p.score for p in session.participants.values()}
-    assert all(score == results[0].points_awarded for score in scores.values())
+    # Each participant's stored score must equal exactly the points its own answer earned
+    # (bonus can differ by a point between answers if a millisecond boundary is crossed).
+    for participant, result in zip(participants, results, strict=True):
+        assert session.participants[participant.user_id].score == result.points_awarded
     assert len(session.leaderboard()) == 50

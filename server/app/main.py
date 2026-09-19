@@ -215,20 +215,22 @@ async def _handle_rejoin(websocket: WebSocket, quiz_id: str, message: RejoinMess
         ).model_dump_json()
     )
     current = session.current_question
-    await websocket.send_text(
-        ScoreUpdateMessage(
-            user_id=participant.user_id,
-            question_id=current.id if current else "",
-            correct=False,
-            points_awarded=0,
-            total_score=participant.score,
-        ).model_dump_json()
-    )
     # A reconnecting client missed every broadcast while away, so resync it with
-    # the live state instead of leaving the UI blank until the next question.
+    # the live state: the running question (with the time actually left), the
+    # user's own result for it if they already answered, then the standings.
     if session.state == QuizState.IN_PROGRESS and current is not None:
         question_msg = _question_message(session, current, session.remaining_ms())
         await websocket.send_text(question_msg.model_dump_json())
+        earlier = participant.results.get(current.id)
+        if earlier is not None:
+            ack = ScoreUpdateMessage(
+                user_id=participant.user_id,
+                question_id=current.id,
+                correct=earlier.correct,
+                points_awarded=earlier.points_awarded,
+                total_score=participant.score,
+            )
+            await websocket.send_text(ack.model_dump_json())
         await websocket.send_text(_leaderboard_message(session).model_dump_json())
     elif session.state == QuizState.FINISHED:
         final = QuizEndMessage(final_standings=_leaderboard_entries(session))

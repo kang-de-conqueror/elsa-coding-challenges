@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from app.scoring import RankableParticipant, RankedEntry, build_leaderboard, calculate_points
@@ -56,7 +56,7 @@ class Participant:
     connected: bool = True
     score: int = 0
     total_response_ms: int = 0
-    answered_question_ids: set[str] = field(default_factory=set)
+    results: dict[str, AnswerResult] = field(default_factory=dict)
     seen_request_ids: set[str] = field(default_factory=set)
 
 
@@ -195,21 +195,13 @@ class QuizSession:
             if participant is None:
                 raise QuizError("UNKNOWN_USER", "No participant with that id in this quiz.")
 
-            if request_id in participant.seen_request_ids:
-                # Idempotent replay (client retry after a dropped ack): return the
-                # already-applied result instead of scoring twice.
-                return AnswerResult(
-                    correct=question_id in participant.answered_question_ids,
-                    points_awarded=0,
-                    total_score=participant.score,
-                    duplicate=True,
-                )
-            participant.seen_request_ids.add(request_id)
-
-            if question_id in participant.answered_question_ids:
-                return AnswerResult(
-                    correct=False, points_awarded=0, total_score=participant.score, duplicate=True
-                )
+            prior = participant.results.get(question_id)
+            if prior is not None or request_id in participant.seen_request_ids:
+                # Idempotent replay (client retry after a dropped ack, or a second
+                # click): hand back the original result instead of scoring twice.
+                if prior is None:
+                    return AnswerResult(False, 0, participant.score, duplicate=True)
+                return replace(prior, total_score=participant.score, duplicate=True)
 
             assert self._current_question_started_at is not None
             elapsed_ms = int((time.monotonic() - self._current_question_started_at) * 1000)
@@ -219,8 +211,9 @@ class QuizSession:
                 correct=correct, remaining_ms=remaining_ms, duration_ms=question.duration_ms
             )
 
-            participant.answered_question_ids.add(question_id)
             participant.score += points
             participant.total_response_ms += max(0, min(elapsed_ms, question.duration_ms))
-
-            return AnswerResult(correct=correct, points_awarded=points, total_score=participant.score)
+            result = AnswerResult(correct=correct, points_awarded=points, total_score=participant.score)
+            participant.results[question_id] = result
+            participant.seen_request_ids.add(request_id)
+            return result

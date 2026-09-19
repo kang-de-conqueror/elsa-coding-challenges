@@ -40,7 +40,7 @@ npm run type-check
 npm run build
 ```
 
-`npm run test:unit` (Vitest) is scaffolded but no component tests were written for this challenge, given the time budget — see "Out of scope" in `../design/SYSTEM_DESIGN.md`.
+`npm run test:unit -- --run` runs the Vitest store tests. `npm run test:e2e` drives a real browser through the full flow (needs the server on :8000, `npm run dev` on :5173, and Chrome or Edge installed; set `E2E_CHANNEL=msedge` to use Edge). It takes about 90 seconds because it plays a whole quiz.
 
 ## Project layout
 

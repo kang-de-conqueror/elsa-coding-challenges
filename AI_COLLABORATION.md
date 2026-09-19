@@ -36,7 +36,7 @@ The work started in Claude Code's plan mode: given only the challenge's GitHub r
 
 ## Client implementation
 
-**Task**: the Vue 3/TypeScript/Pinia frontend — protocol types, the `useQuizSocket` composable (connection lifecycle, reconnect with backoff, heartbeat, rejoin-from-localStorage), the Pinia store, and all five components/views.
+**Task**: the Vue 3/TypeScript/Pinia frontend — protocol types, the `useQuizSocket` composable (connection lifecycle, reconnect with backoff, heartbeat, rejoin-from-sessionStorage), the Pinia store, and all five components/views.
 
 **AI's role**: Claude Code scaffolded the project (`npm create vue@latest`) and wrote all application code against the same protocol contract as the server.
 
@@ -44,7 +44,7 @@ The work started in Claude Code's plan mode: given only the challenge's GitHub r
 
 - `vue-tsc --build` (strict TypeScript project references) and `eslint`/`oxlint` were run and fixed to a clean state (one real issue caught: a single-word component name, `Leaderboard.vue`, violating the Vue style guide's multi-word component rule — renamed to `LeaderboardPanel.vue`).
 - A production build (`vite build`) was run to confirm the app actually compiles and bundles, not just type-checks in isolation.
-- **Explicit limitation, stated rather than glossed over**: this sandboxed environment has no browser-automation tool available, so the UI was *not* visually exercised in a real browser as part of this session. To still verify the client's WebSocket usage was correct rather than assuming it, a small Node script was written that sends and receives the exact same message shapes `useQuizSocket.ts` does (join -> start -> question -> answer -> score_update -> leaderboard -> next question), run against the live server. It confirmed the full message cycle works end-to-end across two simulated clients through multiple question rounds. This is real verification of the protocol contract the UI depends on, but it is **not** a substitute for a real browser check (DOM rendering, CSS, click handling, countdown timer accuracy) — that check is still outstanding and should be the first thing a human reviewer does before treating this as fully verified.
+- A real browser test was added (`client/e2e/quiz-flow.mjs`, Playwright driving installed Edge/Chrome): two tabs join, play, answer right/wrong, watch the live leaderboard, reload one tab mid-question and resume, and reach the final screen with zero console errors. A screenshot of the final screen was also inspected by eye.
 
 ## Infrastructure and docs
 
@@ -58,4 +58,20 @@ The work started in Claude Code's plan mode: given only the challenge's GitHub r
 
 **Verified in this session**: server correctness under concurrency (automated + load test), server API surface (manual + automated), the WebSocket protocol contract end-to-end (both server-side integration test and a client-shaped script), static analysis (lint + strict types) on both server and client, and that the client builds.
 
-**Not verified in this session**: the Vue UI's actual rendered appearance and interaction behavior in a real browser, and the GitHub Actions CI workflow's behavior on GitHub's own runners. Both should be checked before this is presented as a finished submission.
+**Not verified**: the GitHub Actions workflow on GitHub's own runners until the first push runs it, other browsers than Chromium-based Edge/Chrome, and Docker Compose (see the review section below).
+
+## Review round (engineering-manager style code review)
+
+After the first implementation, the whole codebase was re-read as a reviewer would, and every finding was fixed with a regression test and its own commit rather than folded into feature commits. Findings:
+
+1. **Stale socket evicted the live one.** After a rejoin, the old socket's cleanup removed the *new* socket from the room and marked the user offline. Cleanup is now socket-aware. Regression test: `test_stale_socket_closing_after_rejoin_does_not_evict_new_socket`. Mutation-checked: reverting the fix makes the test fail.
+2. **Room id in the message body was trusted.** A client on `/ws/A` could send `join` for room B, leaking registrations and breaking lookups. The URL room is now authoritative; mismatches get `INVALID_MESSAGE`.
+3. **Unjoined sockets could start quizzes; one socket could join repeatedly.** Now rejected (`UNKNOWN_USER` / `INVALID_MESSAGE`).
+4. **Rejoin left the UI blank.** A reconnecting client missed every broadcast. The server now resyncs question (with remaining time), the user's own earlier result, standings, or the final result.
+5. **A rejoin could lock the user out of the current question** (the score sync was treated as an answer). Fixed together with 4; duplicate answers now replay the original result instead of a misleading `Incorrect`.
+6. **Sessions were never freed.** Finished quizzes are removed after a 10 minute grace period.
+7. **Two tabs in one browser rejoined as the same user** because the session lived in `localStorage`. Now `sessionStorage`. Found by thinking through the two-tab demo, confirmed by the browser test.
+8. **Client leaked a socket on re-join and could get trapped by a stale saved session.** Old sockets are closed with handlers detached; an unknown saved session falls back to a fresh join. Double-clicking an answer is blocked locally.
+9. **Test hygiene.** A timing-sensitive assertion in the 50-way concurrency test was made exact per participant; `pytest-timeout` was added because a regression previously showed up as a hang.
+
+Verification of the round: 38 server tests, 7 client unit tests, the browser flow, ruff, mypy `--strict`, eslint/oxlint, vue-tsc and a production build all pass locally.

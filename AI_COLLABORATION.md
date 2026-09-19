@@ -18,18 +18,18 @@ The work started in Claude Code's plan mode: given only the challenge's GitHub r
 
 **AI's role**: Claude Code proposed the initial architecture (FastAPI/WebSocket + Vue/Pinia, in-memory session store behind a narrow interface), the full message protocol (join/rejoin/start/answer/ping client-side; joined/error/participant_update/question/score_update/leaderboard/quiz_end/pong server-side), and the scoring formula (base points + time-remaining bonus, with a three-level tie-break: score, then cumulative response time, then join order).
 
-**Verification**: the protocol was cross-checked for completeness against every UI state the client would need (lobby, in-progress, finished, disconnected/rejoining) before any server code was written, catching one gap early (rejoin needed to replay the participant's current score, not just confirm the connection — see `_handle_rejoin` sending a `score_update` alongside `joined`). The scoring/tie-break design was validated after the fact with unit tests (`server/tests/test_scoring.py`) covering boundary cases (zero time remaining, full time remaining, negative/over-range clamping, all three tie-break levels) — see "Server implementation" below.
+**Verification**: the protocol was cross-checked for completeness against every UI state the client would need (lobby, in-progress, finished, disconnected/rejoining) before any server code was written, catching one gap early (a rejoining client needs the live state replayed, not just a confirmation — later strengthened in the review round below to also resend the running question, the user's own result and the standings). The scoring/tie-break design was validated after the fact with unit tests (`server/tests/test_scoring.py`) covering boundary cases (zero time remaining, full time remaining, negative/over-range clamping, all three tie-break levels) — see "Server implementation" below.
 
 ## Server implementation
 
 **Task**: the FastAPI/WebSocket backend — `quiz.py` (state machine), `scoring.py`, `connection_manager.py`, `session_store.py`, `observability.py`, `main.py`, and the full test suite.
 
-**AI's role**: Claude Code wrote all of the above from the agreed design, including the concurrency-safety approach (`asyncio.Lock` per quiz room) and the idempotent-answer design (dedup by client-generated `request_id`).
+**AI's role**: Claude Code wrote all of the above from the agreed design, including the concurrency-safety approach (`asyncio.Lock` per quiz room) and the idempotent-answer design (one scored answer per participant per question; retries replay the original result).
 
 **Verification** (concrete, not just "it looked right"):
 
 - `ruff check` and `mypy --strict` were run after every file, and every finding was fixed before moving on — not deferred to a final pass. Two real strict-mode gaps were caught and fixed this way: an untyped `dict` parameter (`schemas.py::parse_client_message`) and several lines exceeding the configured line-length that would have failed CI.
-- The full pytest suite (22 tests) was run repeatedly during development, including a targeted concurrency test (`test_concurrent_answers_from_many_participants_never_corrupt_state`) that fires 50 simultaneous `submit_answer` calls via `asyncio.gather` specifically to catch a lost-update bug if the per-session lock were ever removed or misapplied — this is a regression test for a class of bug, not just a happy-path check.
+- The full pytest suite (38 tests after the review round) was run repeatedly during development, including a targeted concurrency test (`test_concurrent_answers_from_many_participants_never_corrupt_state`) that fires 50 simultaneous `submit_answer` calls via `asyncio.gather` specifically to catch a lost-update bug if the per-session lock were ever removed or misapplied — this is a regression test for a class of bug, not just a happy-path check.
 - The integration test (`test_integration_ws.py`) runs the *real* FastAPI app (not a mock) with three concurrent simulated WebSocket clients through a full join -> start -> answer -> quiz_end flow, asserting the final leaderboard ranking is correct.
 - The server was actually started (`uvicorn app.main:app`) and hit with real HTTP/WebSocket traffic (`curl /healthz`, `curl /metrics`) to confirm it boots and serves correctly outside the test harness — catching issues a unit test alone wouldn't (e.g. the FastAPI `lifespan` wiring for the idle-connection reaper background task).
 - **A load test caught a real bug that code review alone had missed.** `scripts/load_test.py` was written and run against the live server at increasing scale (50 -> 100 -> 150 -> 200 -> 300 simulated clients). The first 300-client run measured a mean answer-ack latency of ~5 seconds — nowhere near the <150ms target. Rather than accepting or hand-waving this, the broadcast code path was re-read, which revealed an O(N²) bug: the full leaderboard was being broadcast to all N participants after *every single* answer, so a synchronized burst of N answers costs N x N sequential sends. This was fixed with a 150ms debounce/coalescing window (`main.py::_schedule_leaderboard_broadcast`), and the *same* load test was re-run to confirm the fix: leaderboard fan-out spread dropped from 1481ms to 265ms and median ack latency dropped from ~6.0s to ~0.9s at 300 clients (full numbers and methodology in `design/SYSTEM_DESIGN.md`, section 7). The originally planned NFR ("300-500 concurrent participants") was revised downward to a measured, honest number after this data, rather than left as an unverified assumption.
@@ -58,7 +58,7 @@ The work started in Claude Code's plan mode: given only the challenge's GitHub r
 
 **Verified in this session**: server correctness under concurrency (automated + load test), server API surface (manual + automated), the WebSocket protocol contract end-to-end (both server-side integration test and a client-shaped script), static analysis (lint + strict types) on both server and client, and that the client builds.
 
-**Not verified**: the GitHub Actions workflow on GitHub's own runners until the first push runs it, other browsers than Chromium-based Edge/Chrome, and Docker Compose (see the review section below).
+**Not verified**: the GitHub Actions workflow on GitHub's own runners until the first push runs it, and other browsers than Chromium-based Edge/Chrome.
 
 ## Review round (engineering-manager style code review)
 
@@ -73,5 +73,7 @@ After the first implementation, the whole codebase was re-read as a reviewer wou
 7. **Two tabs in one browser rejoined as the same user** because the session lived in `localStorage`. Now `sessionStorage`. Found by thinking through the two-tab demo, confirmed by the browser test.
 8. **Client leaked a socket on re-join and could get trapped by a stale saved session.** Old sockets are closed with handlers detached; an unknown saved session falls back to a fresh join. Double-clicking an answer is blocked locally.
 9. **Test hygiene.** A timing-sensitive assertion in the 50-way concurrency test was made exact per participant; `pytest-timeout` was added because a regression previously showed up as a hang.
+
+10. **Docker path was untested.** `docker compose up --build` was run for real, the browser flow above passed against the containers, and the load test and `/metrics` were checked against the containerised server.
 
 Verification of the round: 38 server tests, 7 client unit tests, the browser flow, ruff, mypy `--strict`, eslint/oxlint, vue-tsc and a production build all pass locally.

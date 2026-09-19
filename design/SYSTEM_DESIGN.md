@@ -43,7 +43,7 @@ A production deployment of this architecture beyond one process would add a load
 - **Vue 3 client** (`client/`): one WebSocket connection per browser tab. `useQuizSocket.ts` owns the connection lifecycle (connect, reconnect with exponential backoff, heartbeat ping, rejoin from a saved per-tab session). A Pinia store (`stores/quiz.ts`) holds all quiz state as the single source of truth for the UI; components (`QuestionCard`, `LeaderboardPanel`, `ScoreBadge`, `ConnectionStatus`) are pure renderers of that state.
 - **WebSocket endpoint** (`server/app/main.py`): the composition root. Accepts a connection per `(quiz_id)`, parses every inbound message against the versioned Pydantic schema (`schemas.py`), and dispatches to one of four handlers (join, rejoin, start, answer). Never trusts client-supplied score or timing data (see ADR 0003).
 - **ConnectionManager** (`connection_manager.py`): the registry of live sockets per quiz room, the broadcast fan-out, per-connection answer rate limiting (token bucket), and idle-connection reaping (a connection silent for 60s is force-closed — catches a half-open connection, e.g. a laptop going to sleep, that a clean-disconnect handler alone would never see).
-- **QuizSession state machine** (`quiz.py`): owns one quiz room's participants, current question, and scores, behind its own `asyncio.Lock`. State machine: `LOBBY -> IN_PROGRESS -> FINISHED`. Answer submission is idempotent by client-generated `request_id`, so a client retry after a dropped ack can never double-score.
+- **QuizSession state machine** (`quiz.py`): owns one quiz room's participants, current question, and scores, behind its own `asyncio.Lock`. State machine: `LOBBY -> IN_PROGRESS -> FINISHED`. Answer submission is idempotent per participant and question: a retry after a dropped ack, or a second click, replays the original result and can never double-score.
 - **Scoring/ranking** (`scoring.py`): pure functions, no I/O, no asyncio — see ADR 0003 for the formula and tie-break rule.
 - **SessionStore** (`session_store.py`): a narrow interface with one implementation (`InMemorySessionStore`) today; see ADR 0002 for the documented Redis-backed alternative.
 - **Observability** (`observability.py`): structured JSON logs correlated by `quiz_id`/`user_id`, and Prometheus metrics (`active_connections`, `active_sessions`, `answers_processed_total`, `broadcast_latency_seconds`, `messages_rejected_total`) exposed at `/metrics`.
@@ -95,6 +95,8 @@ A production deployment of this architecture beyond one process would add a load
 | 200 | fully synchronized (worst case) | 675.6ms | 2380.2ms | 1085.1ms |
 | 300 | fully synchronized, **before** the debounce fix | 5999.5ms | 8266.9ms | 1481.2ms |
 | 300 | fully synchronized, **after** the debounce fix | 916.4ms | 8838.7ms | 264.8ms |
+| 100 | fully synchronized, Docker container, after review fixes | 50.7ms | 67.5ms | 33.2ms |
+| 100 | staggered over 300ms, Docker container, after review fixes | 3.5ms | 32.5ms | 118.3ms |
 
 Reading this honestly: the debounce fix cut the leaderboard fan-out spread by ~5.6x at 300 clients and cut median ack latency by ~6.5x, but a *fully-synchronized* burst of 300+ answers on a *single process* still has a long tail, because 300 independent `submit_answer` calls genuinely have to be processed one at a time by one event loop (the per-session lock that guarantees correctness also serializes the work). The knee is between 100 and 150 synchronized clients on this dev machine. Two things matter for interpreting this:
 

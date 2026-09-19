@@ -24,7 +24,7 @@ function wsBaseUrl(): string {
 
 function saveSession(quizId: string, userId: string): void {
   try {
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ quizId, userId }))
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ quizId, userId }))
   } catch {
     // Best-effort only: a private-browsing tab or blocked storage just means
     // rejoin-after-disconnect won't restore the session. Not fatal.
@@ -33,7 +33,7 @@ function saveSession(quizId: string, userId: string): void {
 
 function loadSession(quizId: string): { userId: string } | null {
   try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY)
+    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as { quizId?: unknown; userId?: unknown }
     if (parsed.quizId === quizId && typeof parsed.userId === 'string') {
@@ -45,9 +45,23 @@ function loadSession(quizId: string): { userId: string } | null {
   return null
 }
 
+function closeSocket(): void {
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
+  heartbeatTimer = null
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  reconnectTimer = null
+  if (ws) {
+    // Detach handlers first so closing an old socket cannot trigger a reconnect
+    // or overwrite the status of the socket that replaces it.
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null
+    ws.close()
+    ws = null
+  }
+}
+
 function clearSession(): void {
   try {
-    localStorage.removeItem(SESSION_STORAGE_KEY)
+    sessionStorage.removeItem(SESSION_STORAGE_KEY)
   } catch {
     // Nothing to do if storage is unavailable.
   }
@@ -84,6 +98,15 @@ export function useQuizSocket() {
         store.setFinished(message.final_standings)
         break
       case 'error':
+        // A saved session the server no longer knows (restart, expired room)
+        // must not trap the user: drop it and fall back to a fresh join.
+        if ((message.code === 'QUIZ_NOT_FOUND' || message.code === 'UNKNOWN_USER') && store.phase === 'not_joined') {
+          clearSession()
+          if (pendingUsername) {
+            send({ v: PROTOCOL_VERSION, type: 'join', quiz_id: quizId, username: pendingUsername })
+            break
+          }
+        }
         store.setError(message.message)
         break
       case 'pong':
@@ -99,6 +122,7 @@ export function useQuizSocket() {
   }
 
   function connect(quizId: string): void {
+    closeSocket()
     manuallyClosed = false
     store.quizId = quizId
     store.setConnectionStatus(reconnectAttempt > 0 ? 'reconnecting' : 'connecting')
@@ -119,7 +143,11 @@ export function useQuizSocket() {
     }
 
     socket.onmessage = (event: MessageEvent<string>) => {
-      handleMessage(JSON.parse(event.data) as ServerMessage, quizId)
+      try {
+        handleMessage(JSON.parse(event.data) as ServerMessage, quizId)
+      } catch {
+        store.setError('Received an unreadable message from the server.')
+      }
     }
 
     socket.onclose = () => {
@@ -162,10 +190,8 @@ export function useQuizSocket() {
   function leave(): void {
     manuallyClosed = true
     clearSession()
-    if (reconnectTimer) clearTimeout(reconnectTimer)
-    if (heartbeatTimer) clearInterval(heartbeatTimer)
-    ws?.close()
-    ws = null
+    closeSocket()
+    pendingUsername = ''
     reconnectAttempt = 0
     store.reset()
   }

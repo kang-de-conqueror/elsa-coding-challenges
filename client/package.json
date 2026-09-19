@@ -13,7 +13,8 @@
     "lint": "run-s \"lint:*\"",
     "lint:oxlint": "oxlint . --fix",
     "lint:eslint": "eslint . --fix --cache",
-    "format": "prettier --write --experimental-cli src/"
+    "format": "prettier --write --experimental-cli src/",
+    "test:e2e": "node e2e/quiz-flow.mjs"
   },
   "dependencies": {
     "pinia": "^4.0.3",
@@ -37,6 +38,7 @@
     "jsdom": "^30.0.1",
     "npm-run-all2": "^9.0.3",
     "oxlint": "~1.82.0",
+    "playwright-core": "^1.63.0",
     "prettier": "3.9.6",
     "typescript": "~6.0.0",
     "vite": "^8.2.2",

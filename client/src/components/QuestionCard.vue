@@ -36,7 +36,8 @@ const progressPct = computed(() => {
 })
 
 function choose(index: number): void {
-  if (!store.currentQuestion || store.hasAnsweredCurrentQuestion || remainingMs.value <= 0) return
+  if (!store.currentQuestion || selectedIndex.value !== null || store.hasAnsweredCurrentQuestion) return
+  if (remainingMs.value <= 0) return
   selectedIndex.value = index
   submitAnswer(store.currentQuestion.question_id, index)
 }
@@ -58,7 +59,7 @@ function choose(index: number): void {
           type="button"
           class="choice"
           :class="{ selected: selectedIndex === index }"
-          :disabled="store.hasAnsweredCurrentQuestion || remainingMs <= 0"
+          :disabled="selectedIndex !== null || store.hasAnsweredCurrentQuestion || remainingMs <= 0"
           @click="choose(index)"
         >
           {{ choice }}
